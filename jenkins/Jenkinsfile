@@ -1,0 +1,66 @@
+pipeline {
+  agent { node { label 'worker' } }
+  environment {
+    PROJECT_OWNER    = "${PROJECT_OWNER}"
+    REPO             = 'Ghost'
+    APP_NAME         = 'ghost'
+    GITHUBUSER       = "${GITHUB_USER}"
+    GITHUBTOKEN      = credentials("${TOKEN_ID}")
+    DOCKER_REGISTRY  = "${DOCKER_REGISTRY}"
+    STAGING_NAMESPACE = "staging"
+    PRO_NAMESPACE     = "production"
+  }
+  stages{
+    stage('Build Docker image'){
+      steps {
+        sh '''
+        git describe --exact-match --tags $(git rev-parse --short HEAD) > tag_id || :
+        if [ -s tag_id ]; then
+          VERSION=$tag_id
+        else
+          VERSION=latest
+        fi
+        docker build . -t $DOCKER_REGISTRY/$APP_NAME:$VERSION
+        docker push $DOCKER_REGISTRY/$APP_NAME:$VERSION
+        '''
+      }
+    }
+    stage('Deploy app staging'){
+      steps {
+        sh '''
+        if [ -s tag_id ]; then
+          VERSION=$tag_id
+        else
+          VERSION=latest
+        fi
+        kubectl set image deployment $APP_NAME $APP_NAME=$DOCKER_REGISTRY/$APP_NAME:$VERSION -n $STAGING_NAMESPACE
+        '''
+      }
+    }
+    stage('Test app staging'){
+      steps {
+        sh'''
+        RESPONSE=$(curl -I http://my-ghost-blog.com 2>/dev/null | head -n 1 | cut -d$' ' -f2)
+        if [ "x$RESPONSE" != "x200" ]; then
+          echo "[TEST ERROR] Web app is unavailable"
+          exit 1
+        else
+          echo "[TEST OK] Web app is available"
+        fi
+        '''
+      }
+    }
+    stage('Deploy app production'){
+      steps {
+        sh '''
+        if [ -s tag_id ]; then
+          VERSION=$tag_id
+        else
+          VERSION=latest
+        fi
+        kubectl set image deployment $APP_NAME $APP_NAME=$DOCKER_REGISTRY/$APP_NAME:$VERSION -n $PRO_NAMESPACE
+        '''
+      }
+    }
+  }
+}
